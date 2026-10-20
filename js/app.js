@@ -23,6 +23,8 @@
   const pending = new Set(); // 서버 확정 전인 내 새 행성 id
   const gone = new Set();    // 서버 확정 전인 폐기 id
   const fresh = new Set();   // Realtime 으로 새 글이 온 행성 (인덱스 표시용)
+  const signable = new Set(); // 서버가 방명록 작성을 허락한 'me>host' (상대 쪽에서 기록된 충돌)
+  const signChecked = new Set(); // 이미 서버에 물어본 'me>host'
 
   /* ======================================================================
      FIGLET (ANSI Shadow)
@@ -64,6 +66,7 @@
   function register(d) {
     OE.completeSpec(d);
     if (!Array.isArray(d.posts)) d.posts = [];
+    if (!Array.isArray(d.guestbook)) d.guestbook = [];
     planets.set(d.id, d);
     return scene.addBody(d);
   }
@@ -74,12 +77,14 @@
     scene.removeBody(id);
     planets.delete(id);
     fresh.delete(id);
+    planets.forEach((p) => { p.guestbook = p.guestbook.filter((g) => g.from !== id); });
     if (state.me === id) state.me = null;
   }
   boot0.planets.forEach(register);
   if (state.me && planets.has(state.me)) scene.setMine(state.me);
   else state.me = null;
 
+  const isTmp = (g) => String(g.id).startsWith('tmp-');
   const sameKeys = (a, b) => Object.keys(Object.assign({}, a, b)).every((k) => a[k] === b[k]);
 
   /** 서버 우주를 id 기준으로 diff 해서 장면에 반영한다. */
@@ -100,7 +105,10 @@
       }
       const posts = p.id === state.me ? cur.posts : p.posts || []; // 내 글은 낙관적 반영분 유지
       if (ui.reader === p.id && posts.length !== cur.posts.length) readerDirty = true;
-      Object.assign(cur, { name: p.name, author: p.author, handle: p.handle, createdAt: p.createdAt, posts, seed: p.seed, user: p.user });
+      // 방명록은 서버 목록 + 아직 확정 전인 내 낙관적 항목
+      const guestbook = (p.guestbook || []).concat(cur.guestbook.filter(isTmp));
+      if (ui.reader === p.id && guestbook.map((g) => g.id).join() !== cur.guestbook.map((g) => g.id).join()) readerDirty = true;
+      Object.assign(cur, { name: p.name, author: p.author, handle: p.handle, createdAt: p.createdAt, bornAt: p.bornAt || cur.bornAt, posts, guestbook, seed: p.seed, user: p.user });
     }
     const me = u.me && planets.has(u.me) ? u.me : pending.size ? state.me : null;
     if (me !== state.me || scene.mine !== scene.get(me)) { state.me = me; scene.setMine(me); }
@@ -243,7 +251,7 @@
     const me = myData();
     if (opts.impact && me) {
       im.hidden = false;
-      im.innerHTML = '▲ IMPACT REPORT — 당신의 행성 <b>' + esc(me.name) + '</b> 이(가) <b>' + esc(d.name) + '</b> 와 충돌했습니다. 교차 궤도에서 수신한 로그를 표시합니다.';
+      im.innerHTML = '▲ IMPACT REPORT — 당신의 행성 <b>' + esc(me.name) + '</b> 이(가) <b>' + esc(d.name) + '</b> 와 충돌했습니다. 교차 궤도에서 수신한 로그를 표시합니다. 맨 아래 방명록에 교신을 남길 수 있습니다.';
     } else if (hits.length) {
       im.hidden = false;
       const last = new Date(hits[hits.length - 1].at);
@@ -265,7 +273,131 @@
             '<h3>' + esc(p.title) + '</h3><div class="post-body">' + paras + '</div></article>';
         }).join('')
       : '<p class="dim">아직 기록된 로그가 없습니다.</p>';
+    renderGuest();
   }
+
+  /* ---------- guestbook (충돌한 행성끼리만) ---------- */
+  const fmtStamp = (ms) => { const t = new Date(ms); return t.getFullYear() + '.' + pad(t.getMonth() + 1, 2) + '.' + pad(t.getDate(), 2) + ' ' + pad(t.getHours(), 2) + ':' + pad(t.getMinutes(), 2); };
+
+  /** 내 행성이 host 와 부딪힌 적이 있는가 (클라이언트 판단 — 최종 판정은 서버 RLS). */
+  function canSign(hostId) {
+    const me = myData();
+    if (!me || hostId === me.id || !planets.has(hostId)) return false;
+    // 행성 생성 이후의 충돌만 (서버 can_sign 과 같은 10분 여유). 예전 행성은 bornAt 이 없어 날짜로 대신한다.
+    const since = (me.bornAt || Date.parse(me.createdAt)) - 6e5;
+    if (state.log.some((l) => l.id === hostId && !(l.at < since))) return true;
+    if (me.guestbook.some((g) => g.from === hostId)) return true; // 상대가 먼저 남겼다 = 상대 쪽에서 충돌
+    return signable.has(me.id + '>' + hostId);
+  }
+  /** 내 기록에는 없지만 상대 쪽에서 기록된 충돌이 있는지 서버에 한 번 물어본다. */
+  function probeSign(hostId) {
+    const me = myData();
+    if (!me || Store.mode === 'local' || state.canWrite === false) return;
+    const key = me.id + '>' + hostId;
+    if (signChecked.has(key)) return;
+    signChecked.add(key);
+    Store.canSign(hostId).then((ok) => {
+      if (!ok) { signChecked.delete(key); return; } // 나중에 충돌하면 다시 물어볼 수 있게
+      signable.add(key);
+      if (ui.reader === hostId) renderGuest();
+    }, () => signChecked.delete(key));
+  }
+
+  function renderGuest() {
+    const id = ui.reader, d = planets.get(id), me = myData();
+    const list = d.guestbook.filter((g) => planets.has(g.from)).sort((a, b) => b.at - a.at);
+    $('#gb-count').textContent = pad(list.length, 2);
+    $('#gb-list').innerHTML = list.map((g) => {
+      const w = planets.get(g.from), mineEntry = me && g.from === me.id;
+      const del = !isTmp(g) && (mineEntry || id === state.me) ? '<button class="btn gb-del" data-gb-del="' + esc(g.id) + '" aria-label="삭제">[ × ]</button>' : '';
+      return '<li class="gb-item' + (mineEntry ? ' mine' : '') + (isTmp(g) ? ' tmp' : '') + '">' +
+        '<div class="gb-meta"><a href="#" data-gb-open="' + esc(w.id) + '" style="color:' + (mineEntry ? 'var(--accent)' : rgb(palOf(w).a)) + '">' +
+        esc(glyphOf(w)) + ' ' + (mineEntry ? '◆ ' : '') + esc(w.name) + '</a><span>' + esc(w.handle || w.author) + '</span>' +
+        '<time>' + (isTmp(g) ? 'TRANSMITTING…' : esc(fmtStamp(g.at))) + '</time>' + del + '</div>' +
+        '<p>' + esc(g.body) + '</p></li>';
+    }).join('');
+
+    let mode;
+    if (id === state.me) mode = 'own';
+    else if (!me) mode = 'nomine';
+    else if (state.canWrite === false) mode = 'readonly';
+    else if (canSign(id)) mode = 'sign';
+    else { mode = 'locked'; probeSign(id); }
+
+    const box = $('#gb-form'), key = id + ':' + mode;
+    if (box.dataset.key === key) return; // 작성 중인 글 유지
+    box.dataset.key = key;
+    if (mode === 'sign') {
+      box.innerHTML = '<div class="gb-as">◆ <b>' + esc(me.name) + '</b> 의 이름으로 교신</div>' +
+        '<textarea id="gb-body" maxlength="280" rows="3" placeholder="충돌 지점에 신호를 남기세요…"></textarea>' +
+        '<div class="gb-foot"><span id="gb-len" class="dim">000/280</span><button class="btn btn-primary" data-act="sign">[ SIGN ▸ ]</button></div>';
+      return;
+    }
+    const msg = {
+      own: list.length ? '◆ 당신의 행성과 충돌한 행성들이 남긴 신호입니다.' : '◆ 아직 교신이 없습니다. 다른 행성과 충돌하면 서로의 방명록에 신호를 남길 수 있습니다.',
+      nomine: '행성을 만들고 이 행성과 충돌하면 방명록에 신호를 남길 수 있습니다.',
+      readonly: '✕ 읽기 전용 모드 — 우주와 연결되지 않아 서명할 수 없습니다.',
+      locked: '✕ LOCKED — 내 행성이 이 행성과 충돌해야 방명록에 신호를 남길 수 있습니다.',
+    }[mode];
+    box.innerHTML = '<p class="gb-lock">' + esc(msg) + '</p>';
+  }
+
+  function signGuest() {
+    const host = planets.get(ui.reader), me = myData(), ta = $('#gb-body');
+    if (!host || !me || !ta) return;
+    const body = ta.value.trim();
+    if (!body) { ta.classList.add('invalid'); ta.focus(); return; }
+    const tmp = { id: 'tmp-' + Date.now().toString(36), from: me.id, body, at: Date.now() };
+    host.guestbook.push(tmp);
+    ta.value = ''; ta.classList.remove('invalid'); $('#gb-len').textContent = '000/280';
+    renderGuest();
+    Store.signGuestbook(host.id, me.id, body).then((g) => {
+      const i = host.guestbook.indexOf(tmp);
+      if (i >= 0) host.guestbook.splice(i, 1);
+      if (!host.guestbook.some((x) => x.id === g.id)) host.guestbook.push(g); // Realtime 이 먼저 왔을 수 있다
+      if (ui.reader === host.id) renderGuest();
+    }, (err) => {
+      const i = host.guestbook.indexOf(tmp);
+      if (i >= 0) host.guestbook.splice(i, 1);
+      if (ui.reader === host.id) {
+        renderGuest();
+        const t = $('#gb-body');
+        if (t && !t.value) t.value = body; // 쓴 글은 돌려준다
+      }
+      if (err && err.code === '42501') toast('✕ 충돌 기록이 확인되지 않아 신호를 남길 수 없습니다.', 4200);
+      else failToast(err);
+    });
+  }
+
+  function eraseGuest(gid) {
+    const owner = Array.from(planets.values()).find((p) => p.guestbook.some((g) => String(g.id) === gid));
+    if (!owner) return;
+    const g = owner.guestbook.find((x) => String(x.id) === gid);
+    if (!window.confirm('이 교신 기록을 지울까요?')) return;
+    owner.guestbook.splice(owner.guestbook.indexOf(g), 1);
+    renderGuest();
+    Store.eraseGuestbook(g.id).catch((err) => {
+      if (!owner.guestbook.includes(g)) owner.guestbook.push(g);
+      if (ui.reader === owner.id) renderGuest();
+      failToast(err);
+    });
+  }
+
+  $('#gb-form').addEventListener('click', (e) => { if (e.target.closest('[data-act="sign"]')) signGuest(); });
+  $('#gb-form').addEventListener('input', (e) => {
+    if (e.target.id !== 'gb-body') return;
+    e.target.classList.remove('invalid');
+    $('#gb-len').textContent = pad(e.target.value.length, 3) + '/280';
+  });
+  $('#gb-form').addEventListener('keydown', (e) => {
+    if (e.target.id === 'gb-body' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); signGuest(); }
+  });
+  $('#gb-list').addEventListener('click', (e) => {
+    const o = e.target.closest('[data-gb-open]');
+    if (o) { e.preventDefault(); openReader(o.dataset.gbOpen); return; }
+    const x = e.target.closest('[data-gb-del]');
+    if (x) eraseGuest(x.dataset.gbDel);
+  });
   function closeReader(silent) {
     if (!ui.reader) return;
     ui.reader = null;
@@ -377,7 +509,7 @@
       const d = {
         id: 'u-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         name: f.name.value.trim().toUpperCase(), author, handle: '@' + author.replace(/\s+/g, '').toLowerCase().slice(0, 16),
-        createdAt: date, orbit: draft.orbit, look: draft.look, posts: [post], user: true,
+        createdAt: date, bornAt: Date.now(), orbit: draft.orbit, look: draft.look, posts: [post], user: true,
       };
       state.me = d.id;
       pending.add(d.id);
@@ -490,6 +622,7 @@
     Store.logEncounter(other.id, at).catch(() => {});
     refreshHUD(true);
     if (ui.index) renderIndex();
+    if (ui.reader === other.id) refreshReader(); // 방명록 잠금 해제
     if (ui.modal) { toast('✕ ' + other.data.name + ' 와 충돌! 작성을 마치면 인덱스에서 확인하세요.'); return; }
     if (performance.now() < ui.impactUntil) { toast('✕ 연쇄 충돌 — ' + other.data.name + ' 도 기록되었습니다.'); return; }
     const me = myData();
@@ -698,6 +831,27 @@
       d.posts.push(post);
       if (ui.reader === pid) refreshReader();
       else { fresh.add(pid); if (ui.index) renderIndex(); }
+    }),
+    onGuest: live((pid, g) => {
+      const d = planets.get(pid);
+      if (!d || d.guestbook.some((x) => x.id === g.id)) return;
+      // 내가 방금 보낸 것이면 낙관적 항목을 대체한다
+      const tmp = g.from === state.me && d.guestbook.find((x) => isTmp(x) && x.body === g.body);
+      if (tmp) d.guestbook.splice(d.guestbook.indexOf(tmp), 1);
+      d.guestbook.push(g);
+      if (ui.reader === pid) renderGuest();
+      const w = planets.get(g.from);
+      if (pid === state.me && g.from !== state.me && w) toast('✉ ' + w.name + ' 이(가) 당신의 방명록에 신호를 남겼습니다.', 4200);
+      // 상대가 내 방명록에 남겼다 = 나도 상대에게 남길 수 있다
+      if (pid === state.me && ui.reader === g.from) renderGuest();
+    }),
+    onGuestGone: live((gid) => {
+      planets.forEach((d) => {
+        const i = d.guestbook.findIndex((x) => x.id === gid);
+        if (i < 0) return;
+        d.guestbook.splice(i, 1);
+        if (ui.reader === d.id) renderGuest();
+      });
     }),
   };
 
