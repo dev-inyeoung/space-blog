@@ -14,23 +14,15 @@
   const DEG = 180 / Math.PI;
 
   /* ======================================================================
-     STORE — 로컬 저장소 어댑터 (백엔드 연동 시 이 부분만 교체)
+     STORE — js/store.js (LocalStore | SupabaseStore)
      ====================================================================== */
-  const KEY = 'orbitlog.v1';
-  const Store = {
-    load() {
-      try {
-        const s = JSON.parse(localStorage.getItem(KEY));
-        if (s && Array.isArray(s.planets)) return { planets: s.planets, me: s.me || null, log: Array.isArray(s.log) ? s.log : [] };
-      } catch (e) { /* storage unavailable */ }
-      return { planets: [], me: null, log: [] };
-    },
-    save(state) {
-      try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* storage unavailable */ }
-    },
-  };
-  const state = Store.load();
-  const save = () => Store.save(state);
+  const Store = window.OrbitStore;
+  const boot0 = Store.snapshot();
+  // canWrite: null = 아직 모름(세션 확보 중), false = 읽기 전용
+  const state = { me: boot0.me, log: boot0.log, canWrite: Store.mode === 'local' ? true : null };
+  const pending = new Set(); // 서버 확정 전인 내 새 행성 id
+  const gone = new Set();    // 서버 확정 전인 폐기 id
+  const fresh = new Set();   // Realtime 으로 새 글이 온 행성 (인덱스 표시용)
 
   /* ======================================================================
      FIGLET (ANSI Shadow)
@@ -75,10 +67,47 @@
     planets.set(d.id, d);
     return scene.addBody(d);
   }
-  (window.ORBIT_SEEDS || []).forEach(register);
-  state.planets.forEach(register);
+  function dropPlanet(id, fx) {
+    const b = scene.get(id);
+    if (fx && b) scene.burst(b.pos.x, b.pos.y, b.pos.z, b.st.A, b.st.B, 220);
+    if (ui.reader === id) closeReader();
+    scene.removeBody(id);
+    planets.delete(id);
+    fresh.delete(id);
+    if (state.me === id) state.me = null;
+  }
+  boot0.planets.forEach(register);
   if (state.me && planets.has(state.me)) scene.setMine(state.me);
   else state.me = null;
+
+  const sameKeys = (a, b) => Object.keys(Object.assign({}, a, b)).every((k) => a[k] === b[k]);
+
+  /** 서버 우주를 id 기준으로 diff 해서 장면에 반영한다. */
+  function syncUniverse(u) {
+    const ids = new Set(u.planets.map((p) => p.id));
+    for (const id of Array.from(planets.keys())) if (!ids.has(id) && !pending.has(id)) dropPlanet(id, false);
+    let readerDirty = false;
+    for (const p of u.planets) {
+      if (gone.has(p.id)) continue;
+      const cur = planets.get(p.id);
+      if (!cur) { register(p); continue; }
+      const q = OE.completeSpec({ id: p.id, orbit: p.orbit, look: p.look });
+      if (!sameKeys(cur.orbit, q.orbit) || !sameKeys(cur.look, q.look)) {
+        scene.removeBody(p.id); planets.delete(p.id); register(p);
+        if (ui.reader === p.id) scene.focus(scene.get(p.id));
+        readerDirty = readerDirty || ui.reader === p.id;
+        continue;
+      }
+      const posts = p.id === state.me ? cur.posts : p.posts || []; // 내 글은 낙관적 반영분 유지
+      if (ui.reader === p.id && posts.length !== cur.posts.length) readerDirty = true;
+      Object.assign(cur, { name: p.name, author: p.author, handle: p.handle, createdAt: p.createdAt, posts, seed: p.seed, user: p.user });
+    }
+    const me = u.me && planets.has(u.me) ? u.me : pending.size ? state.me : null;
+    if (me !== state.me || scene.mine !== scene.get(me)) { state.me = me; scene.setMine(me); }
+    state.log = u.log;
+    renderIndex(); refreshCTA(); refreshHUD(true);
+    if (readerDirty) refreshReader();
+  }
 
   const sorted = () => Array.from(planets.values()).sort((a, b) => a.orbit.a - b.orbit.a);
   const myData = () => (state.me ? planets.get(state.me) : null);
@@ -95,7 +124,7 @@
   /* ======================================================================
      UI STATE / PANELS
      ====================================================================== */
-  const ui = { index: false, reader: null, modal: false, about: false, impactUntil: 0 };
+  const ui = { index: false, reader: null, readerOpts: null, modal: false, about: false, impactUntil: 0 };
 
   function layout() {
     const open = ui.index || ui.reader;
@@ -116,7 +145,7 @@
     $('#ix-list').innerHTML = list.length
       ? list.map((d, i) => {
           const A = palOf(d).a;
-          const hit = encounters(d.id).length ? '<em>✕</em>' : '';
+          const hit = (encounters(d.id).length ? '<em>✕</em>' : '') + (fresh.has(d.id) ? '<em class="fresh" title="새 로그">+NEW</em>' : '');
           return '<li tabindex="0" data-id="' + esc(d.id) + '" class="' + (d.id === state.me ? 'mine' : '') + '">' +
             '<span class="ix-n">' + pad(i + 1, 2) + '</span>' +
             '<span class="ix-name"><i style="color:' + rgb(A) + '">' + esc(glyphOf(d)) + '</i>' + (d.id === state.me ? '◆ ' : '') + esc(d.name) + hit + '</span>' +
@@ -160,12 +189,28 @@
   function openReader(id, opts) {
     const d = planets.get(id);
     if (!d) return;
-    opts = opts || {};
-    const b = scene.get(id);
     ui.reader = id;
+    ui.readerOpts = opts || {};
+    if (fresh.delete(id) && ui.index) renderIndex();
     if (window.innerWidth < 1100) closeIndex();
-    scene.focus(b);
-
+    scene.focus(scene.get(id));
+    renderReader();
+    $('#rd-scroll').scrollTop = 0;
+    const el = $('#reader');
+    el.classList.add('open'); el.setAttribute('aria-hidden', 'false');
+    layout();
+    updateLive(true);
+  }
+  /** 열린 리더의 내용만 다시 그린다 (스크롤 유지). */
+  function refreshReader() {
+    if (!ui.reader) return;
+    if (!planets.has(ui.reader)) { closeReader(); return; }
+    const top = $('#rd-scroll').scrollTop;
+    renderReader();
+    $('#rd-scroll').scrollTop = top;
+  }
+  function renderReader() {
+    const id = ui.reader, d = planets.get(id), opts = ui.readerOpts || {};
     const list = sorted();
     $('#rd-no').textContent = pad(list.indexOf(d) + 1, 3);
     const pal = palOf(d);
@@ -220,12 +265,6 @@
             '<h3>' + esc(p.title) + '</h3><div class="post-body">' + paras + '</div></article>';
         }).join('')
       : '<p class="dim">아직 기록된 로그가 없습니다.</p>';
-
-    $('#rd-scroll').scrollTop = 0;
-    const el = $('#reader');
-    el.classList.add('open'); el.setAttribute('aria-hidden', 'false');
-    layout();
-    updateLive(true);
   }
   function closeReader(silent) {
     if (!ui.reader) return;
@@ -288,6 +327,7 @@
   }
   function openModal(mode) {
     if (mode === 'planet' && state.me) { openReader(state.me); return; }
+    if (state.canWrite === false) { failToast({ code: 'readonly' }); return; }
     ui.modal = true;
     const m = $('#modal');
     m.dataset.mode = mode;
@@ -339,10 +379,16 @@
         name: f.name.value.trim().toUpperCase(), author, handle: '@' + author.replace(/\s+/g, '').toLowerCase().slice(0, 16),
         createdAt: date, orbit: draft.orbit, look: draft.look, posts: [post], user: true,
       };
-      state.planets.push(d);
       state.me = d.id;
-      save();
+      pending.add(d.id);
       const b = register(d);
+      Store.createPlanet(d).then(() => pending.delete(d.id), (err) => {
+        pending.delete(d.id);
+        if (!planets.has(d.id)) return;
+        dropPlanet(d.id, true);
+        renderIndex(); refreshCTA(); refreshHUD(true);
+        failToast(err);
+      });
       scene.setMine(d.id);
       scene.burst(b.pos.x, b.pos.y, b.pos.z, b.st.A, [255, 200, 120], 120);
       closeModal();
@@ -354,27 +400,44 @@
       const me = myData();
       if (!me) { closeModal(); return; }
       me.posts.push(post);
-      save();
       closeModal();
       openReader(me.id);
       toast('LOG TRANSMITTED — ' + post.title);
+      Store.addPost(me.id, post).catch((err) => {
+        const i = me.posts.indexOf(post);
+        if (i >= 0) me.posts.splice(i, 1);
+        if (ui.reader === me.id) refreshReader();
+        failToast(err);
+      });
     }
   });
+
+  function failToast(err) {
+    const code = err && err.code, msg = String((err && err.message) || '');
+    if (err) console.warn('[orbitlog] write failed', err);
+    if (code === 'readonly') toast('✕ 읽기 전용 모드 — 우주와 연결되지 않아 기록할 수 없습니다.', 4200);
+    else if (/rate limit/.test(msg)) toast('✕ 송신 과열 — 잠시 후 다시 시도해 주세요.', 4200);
+    else if (code === '23505') toast('✕ 이 계정에는 이미 행성이 있습니다. 새로고침해 주세요.', 4200);
+    else toast('✕ 전송 실패 — 신호가 우주로 나가지 못했습니다', 4200);
+  }
 
   function destroyMine() {
     const me = myData();
     if (!me) return;
     if (!window.confirm('「' + me.name + '」 행성을 궤도에서 폐기할까요? 작성한 로그도 함께 사라집니다.')) return;
     closeReader();
-    const b = scene.get(me.id);
-    if (b) scene.burst(b.pos.x, b.pos.y, b.pos.z, b.st.A, b.st.B, 220);
-    scene.removeBody(me.id);
-    planets.delete(me.id);
-    state.planets = state.planets.filter((p) => p.id !== me.id);
-    state.me = null;
-    save();
+    gone.add(me.id);
+    dropPlanet(me.id, true);
     renderIndex(); refreshCTA(); refreshHUD(true);
     toast('행성이 폐기되었습니다. 새 궤도는 언제든 다시 열 수 있습니다.');
+    Store.destroyPlanet(me.id).then(() => gone.delete(me.id), (err) => {
+      gone.delete(me.id);
+      if (planets.has(me.id) || state.me) return;
+      register(me);
+      state.me = me.id; scene.setMine(me.id);
+      renderIndex(); refreshCTA(); refreshHUD(true);
+      failToast(err);
+    });
   }
 
   /* ---------- about ---------- */
@@ -422,8 +485,9 @@
      ====================================================================== */
   scene.onCollide = (other) => {
     setWarp(1);
-    state.log.push({ id: other.id, at: Date.now() });
-    save();
+    const at = Date.now();
+    state.log.push({ id: other.id, at });
+    Store.logEncounter(other.id, at).catch(() => {});
     refreshHUD(true);
     if (ui.index) renderIndex();
     if (ui.modal) { toast('✕ ' + other.data.name + ' 와 충돌! 작성을 마치면 인덱스에서 확인하세요.'); return; }
@@ -607,6 +671,41 @@
     return Promise.race([wait, new Promise((r) => setTimeout(r, 2000))]);
   }
 
+  /* ======================================================================
+     UPLINK — 서버 우주 동기화 + Realtime
+     ====================================================================== */
+  // 탭이 숨겨진 동안 온 이벤트는 모아 두었다가 다시 보일 때 한꺼번에 반영한다.
+  const deferred = [];
+  const live = (fn) => (...a) => { if (document.hidden) deferred.push(() => fn(...a)); else fn(...a); };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) deferred.splice(0).forEach((f) => f()); });
+
+  const realtime = {
+    onPlanet: live((p) => {
+      if (planets.has(p.id) || gone.has(p.id)) return; // 내가 만든 건 이미 낙관적으로 반영됨
+      const b = register(p);
+      scene.burst(b.pos.x, b.pos.y, b.pos.z, b.st.A, [255, 200, 120], 120);
+      renderIndex();
+      toast('✦ 새 행성 ' + p.name + ' 궤도 진입 — ' + (p.handle || p.author), 4200);
+    }),
+    onPlanetGone: live((id) => {
+      if (!planets.has(id) || pending.has(id)) return;
+      dropPlanet(id, true);
+      renderIndex(); refreshCTA(); refreshHUD(true);
+    }),
+    onPost: live((pid, post) => {
+      const d = planets.get(pid);
+      if (!d || pid === state.me || d.posts.some((x) => x.id === post.id)) return;
+      d.posts.push(post);
+      if (ui.reader === pid) refreshReader();
+      else { fresh.add(pid); if (ui.index) renderIndex(); }
+    }),
+  };
+
+  const uplink = Store.init()
+    .then((r) => { state.canWrite = r.canWrite; return Store.loadUniverse(); })
+    .then((u) => { syncUniverse(u); Store.subscribe(realtime); return 'up'; })
+    .catch((e) => { console.warn('[orbitlog] uplink offline — local cache', e); return 'down'; });
+
   async function boot() {
     const log = $('#boot-log'), bar = $('#boot-bar'), pct = $('#boot-pct'), el = $('#boot');
     let skipped = false;
@@ -632,13 +731,21 @@
       pct.textContent = Math.round(((i + 1) / lines.length) * 100) + '%';
       await sleep(110 + Math.random() * 90);
     }
+    // 첫 프레임은 서버를 기다리지 않는다: 남은 부트 시간 안에 답이 오면 그 결과를, 아니면 PENDING
+    const up = Store.mode === 'local' ? 'local' : await Promise.race([uplink, sleep(900).then(() => 'wait')]);
+    const upLine = {
+      up: ['> uplink ', 'ESTABLISHED'], down: ['> uplink OFFLINE — local cache', ''],
+      wait: ['> uplink ', 'PENDING'], local: ['> uplink LOCAL MODE — browser storage', ''],
+    }[up];
+    log.innerHTML += esc(upLine[0]) + (upLine[1] ? '<span class="dim">' + '.'.repeat(Math.max(2, 46 - upLine[0].length)) + '</span> <span class="ok">' + upLine[1] + '</span>' : '') + '\n';
+    if (up === 'wait') uplink.then((r) => { if (r === 'down') toast('✕ uplink OFFLINE — 로컬 캐시로 표시 중입니다.', 4200); });
     await fontP;
     scene.resize();
     renderIndex(); refreshCTA(); refreshHUD(true); layout();
     requestAnimationFrame((t) => { last = t; frame(t); });
     await sleep(250);
     el.classList.add('done');
-    if (state.me) setTimeout(() => toast('◆ ' + myData().name + ' 이(가) 궤도를 돌고 있습니다. 충돌 레이더 작동 중.'), 900);
+    setTimeout(() => { const me = myData(); if (me) toast('◆ ' + me.name + ' 이(가) 궤도를 돌고 있습니다. 충돌 레이더 작동 중.'); }, 900);
   }
 
   window.addEventListener('resize', () => { scene.resize(); layout(); });

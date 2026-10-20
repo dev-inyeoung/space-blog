@@ -14,7 +14,10 @@ ORBIT.LOG — a no-scroll, single-page "solar system of blogs" where the whole 3
 
 ## Architecture
 
-Scripts load in order as plain globals (no modules): `js/engine.js` → `js/data.js` → `js/app.js`.
+Scripts load in order as plain globals (no modules): supabase-js (jsDelivr, pinned) → `js/config.js` → `js/engine.js` → `js/data.js` → `js/store.js` → `js/app.js`.
+
+- **`store.js`** exposes `window.OrbitStore`: `SupabaseStore` when `ORBIT_CONFIG` has a URL + key, else `LocalStore`. Same interface: sync `snapshot()` for the first frame, then async `init()` / `loadUniverse()` / `createPlanet` / `addPost` / `destroyPlanet` / `logEncounter` / `subscribe()`. Supabase project `orbitlog` (ref `eofftrzjhvdogucscngd`); schema/RLS in `supabase/migrations/`. Planet creation goes through the `launch_planet` RPC (atomic planet + posts, also used for the one-time `orbitlog.v1` migration). If `TEXTURES` in engine.js changes, the `look_range` CHECK needs a migration too.
+- app.js renders from `snapshot()` immediately, then `syncUniverse()` diffs the server universe by id. Writes are optimistic with rollback; `pending`/`gone` sets keep in-flight creates/deletes from being undone by a concurrent sync.
 
 - **`engine.js`** exposes `window.OrbitEngine` and knows nothing about the DOM panels.
   - `Raster`: per-cell `ch` (char code) / `col` (packed RGB) / `z` (depth) typed arrays. Every draw goes through `put()` with a depth test, so draw order doesn't matter for occlusion.
@@ -26,7 +29,7 @@ Scripts load in order as plain globals (no modules): `js/engine.js` → `js/data
   - `Portrait` reuses the same rasterizers into a small raster for the `<pre>` planet previews. It assumes the CSS cell is 0.6em × 1em (`line-height: 1`); changing `.portrait` font/line-height requires changing the aspect constant in `Portrait.render`.
 - **`data.js`**: `window.ORBIT_SEEDS`, the "other people's" planets. `orbit`/`look` fields may be partial; `completeSpec()` fills the gaps deterministically from a hash of `id`.
 - **`app.js`**: the UI layer.
-  - `Store` (localStorage key `orbitlog.v1`: `{ planets, me, log }`) is the single persistence point. Swap it for an API to get a real shared universe (schema in README.md).
+  - `Store` (`window.OrbitStore`, see store.js) is the single persistence point. localStorage keys: `orbitlog.v1` (legacy/local mode), `orbitlog.cache` (last server universe), `orbitlog.queue` (unsent encounters), `orbitlog.auth` (Supabase session).
   - `register()` is the path for any planet into both the `planets` Map and the scene.
   - One user planet per browser (`state.me`). Its orbit comes from `randomSpec()`, which deliberately uses high eccentricity (0.28–0.58) so it crosses other orbits.
   - `onCollide` resets warp to 1×, logs the encounter, plays the impact overlay, then calls `openReader(id, {impact:true})`. A cooldown (`ui.impactUntil`) and the open-modal case only log and toast.

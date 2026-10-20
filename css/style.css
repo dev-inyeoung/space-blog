@@ -200,6 +200,7 @@ body.panel-open .hero > * { pointer-events: none; }
 .ix-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ix-name i { font-style: normal; margin-right: 6px; }
 .ix-name em { font-style: normal; color: var(--danger); margin-left: 6px; }
+.ix-name em.fresh { color: var(--accent); }
 .ix-auth { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ix-a { color: var(--fg-2); font-variant-numeric: tabular-nums; }
 .ix-empty { padding: 20px 16px; color: var(--dim); }
