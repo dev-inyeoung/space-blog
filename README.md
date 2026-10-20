@@ -15,7 +15,15 @@ js/config.js      Supabase URL + publishable key (없으면 로컬 전용 모드
 js/store.js       데이터 레이어 — LocalStore / SupabaseStore (같은 async 인터페이스)
 js/app.js         UI 레이어 — 패널, 생성/작성 모달, 충돌 → 열람 흐름, 입력, Realtime 반영
 supabase/         마이그레이션 + 시드 SQL
+robots.txt · sitemap.xml · llms.txt · og-image.png · favicon.svg · site.webmanifest
+                  SEO / AEO / GEO (검색엔진 · 답변 엔진 · AI 검색용 메타데이터)
 ```
+
+## SEO / AEO / GEO
+- `index.html` `<head>`: canonical, Open Graph/Twitter, JSON-LD(`WebSite` · `WebApplication` · `FAQPage`)
+- `#summary` (`.sr-only`): canvas만으로는 읽을 텍스트가 없으므로 소개 · 사용법 · FAQ · 시드 행성 목록을 크롤러와 스크린리더용 HTML로 제공
+- `llms.txt`: AI 답변 엔진용 요약, `robots.txt`: AI 크롤러 허용 + sitemap
+- 배포 URL(`https://space-blog-opal.vercel.app/`)이 바뀌면 위 파일들의 URL도 함께 바꿀 것. 시드 행성이 바뀌면 `#summary`와 `llms.txt` 목록도 갱신
 
 ## 기능 매핑
 | 요구사항 | 구현 |

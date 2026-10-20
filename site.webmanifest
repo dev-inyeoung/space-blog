@@ -1,0 +1,14 @@
+{
+  "name": "ORBIT.LOG — ASCII 태양계 블로그 네트워크",
+  "short_name": "ORBIT.LOG",
+  "description": "모든 블로그는 하나의 행성이 된다.",
+  "lang": "ko",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#050505",
+  "theme_color": "#050505",
+  "icons": [
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "og-image.png", "sizes": "1200x630", "type": "image/png" }
+  ]
+}
