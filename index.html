@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ORBIT.LOG — 태양계 블로그 네트워크</title>
+  <meta name="description" content="모든 블로그는 하나의 행성이 된다. ASCII로 렌더링된 태양계 위에서 행성 블로그를 만들고, 궤도가 겹치면 서로의 이야기를 발견하세요.">
+  <meta name="theme-color" content="#050505">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;800&family=Nanum+Gothic+Coding:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="space" aria-label="ASCII 태양계 — 행성 블로그 지도. 드래그로 회전, 휠로 확대, 클릭으로 열람"></canvas>
+  <div class="fx fx-scan" aria-hidden="true"></div>
+  <div class="fx fx-vignette" aria-hidden="true"></div>
+  <div class="fx fx-flash" id="flash" aria-hidden="true"></div>
+
+  <!-- ============ BOOT ============ -->
+  <div id="boot" class="boot" aria-hidden="true">
+    <pre id="boot-log" class="boot-log"></pre>
+    <div class="boot-bar"><span id="boot-bar">[--------------------------------]</span> <span id="boot-pct">0%</span></div>
+    <div class="boot-skip">click to skip</div>
+  </div>
+
+  <!-- ============ TOP BAR ============ -->
+  <header class="top">
+    <a class="brand" href="#" id="brand" aria-label="ORBIT.LOG 홈">
+      <span class="brand-glyph">(@)</span>
+      <span class="brand-text"><b>ORBIT.LOG</b><i>heliocentric blog network</i></span>
+    </a>
+    <nav class="top-nav">
+      <button class="btn" data-act="index">[ INDEX <span id="nav-count">00</span> ]</button>
+      <button class="btn" data-act="about">[ ABOUT ]</button>
+    </nav>
+    <div class="top-meta">
+      <div class="clock"><span class="dim">SOL-TIME</span> <b id="clock">0000000.0</b></div>
+      <div class="warp" role="group" aria-label="시간 가속">
+        <span class="dim">WARP</span>
+        <button class="chip on" data-warp="1">1×</button>
+        <button class="chip" data-warp="10">10×</button>
+        <button class="chip" data-warp="50">50×</button>
+        <button class="chip" data-warp="200">200×</button>
+        <button class="chip" id="btn-pause" title="일시정지 (Space)" aria-label="일시정지">||</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ HERO ============ -->
+  <section class="hero" id="hero">
+    <pre class="figlet" id="figlet" aria-label="ORBIT.LOG"></pre>
+    <p class="hero-kicker"><span class="blink">▮</span> ASCII SOLAR SYSTEM · <span id="hero-count">13</span> PLANETS IN ORBIT</p>
+    <h1 class="hero-copy">모든 블로그는 하나의 행성이 된다.<br><span>궤도가 엇갈려 부딪히는 순간, 서로의 이야기가 열린다.</span></h1>
+    <div class="hero-cta">
+      <button class="btn btn-primary" id="btn-create">[ + 나의 행성 만들기 ]</button>
+      <span class="hint">DRAG 회전 · WHEEL 줌 · CLICK 열람</span>
+    </div>
+  </section>
+
+  <!-- ============ INDEX (left) ============ -->
+  <aside class="panel panel-left frame" id="index" aria-hidden="true" aria-label="행성 목록">
+    <div class="panel-head">
+      <span class="tag">// SYSTEM INDEX</span>
+      <button class="btn" data-close="index">[ ESC ]</button>
+    </div>
+    <label class="search">
+      <span>&gt;</span>
+      <input id="ix-search" type="text" placeholder="search planet / author_" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="ix-cols"><span>#</span><span>BODY</span><span>AUTHOR</span><span>a(AU)</span></div>
+    <ol class="ix-list" id="ix-list"></ol>
+    <div class="ix-legend">(=)띠 (@)폭풍 (%)얼룩 (o)크레이터 (*)빙하 (#)용암 (&amp;)소용돌이 · -( )- 고리 · ✕ 충돌함</div>
+  </aside>
+
+  <!-- ============ READER (right) ============ -->
+  <aside class="panel panel-right frame" id="reader" aria-hidden="true" aria-label="행성 블로그">
+    <div class="panel-head">
+      <span class="tag">// PLANET FILE <span id="rd-no">000</span></span>
+      <div class="panel-nav">
+        <button class="btn" id="rd-prev" aria-label="이전 행성">[ &lt; ]</button>
+        <button class="btn" id="rd-next" aria-label="다음 행성">[ &gt; ]</button>
+        <button class="btn" data-close="reader">[ ESC ]</button>
+      </div>
+    </div>
+    <div class="panel-scroll" id="rd-scroll">
+      <div id="rd-impact" class="rd-impact" hidden></div>
+      <div class="rd-hero">
+        <pre class="portrait" id="rd-portrait" aria-hidden="true"></pre>
+        <div class="rd-id">
+          <div class="rd-badges" id="rd-badges"></div>
+          <h2 id="rd-name">—</h2>
+          <div class="rd-author" id="rd-author"></div>
+          <div class="rd-live" id="rd-live"></div>
+        </div>
+      </div>
+      <dl class="specs" id="rd-specs"></dl>
+      <div class="rd-actions" id="rd-actions"></div>
+      <div class="rd-posts" id="rd-posts"></div>
+      <div class="rd-end">-- END OF TRANSMISSION --</div>
+    </div>
+  </aside>
+
+  <!-- ============ MY PLANET HUD ============ -->
+  <div class="hud frame" id="hud" hidden>
+    <div class="hud-head"><span class="accent">◆ MY PLANET</span><b id="hud-name">—</b></div>
+    <div class="hud-sub dim">PROXIMITY SCAN</div>
+    <ul class="hud-prox" id="hud-prox"></ul>
+    <div class="hud-foot">
+      <span>ENCOUNTERS <b id="hud-enc">0</b></span>
+      <button class="btn" id="hud-open">[ OPEN ]</button>
+    </div>
+  </div>
+
+  <!-- ============ CREATE / WRITE MODAL ============ -->
+  <div class="modal" id="modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-box frame">
+      <div class="panel-head">
+        <span class="tag" id="modal-title">// NEW PLANET — 행성 생성 프로토콜</span>
+        <button class="btn" data-close="modal">[ ESC ]</button>
+      </div>
+      <div class="modal-grid">
+        <div class="gen" id="gen">
+          <pre class="portrait big" id="gen-portrait" aria-hidden="true"></pre>
+          <div class="gen-tag dim">RANDOM GENESIS · 궤도 / 크기 / 디자인 자동 지정</div>
+          <dl class="specs" id="gen-specs"></dl>
+          <button class="btn btn-ghost" type="button" id="gen-reroll">[ ⟳ 다시 굴리기 ]</button>
+        </div>
+        <form class="form" id="form" novalidate>
+          <label class="f-planet"><span>PLANET NAME <em>행성 이름</em></span>
+            <input name="name" maxlength="16" placeholder="ex) ORION-5" autocomplete="off"></label>
+          <label class="f-planet"><span>AUTHOR <em>작성자</em></span>
+            <input name="author" maxlength="20" placeholder="닉네임" autocomplete="off"></label>
+          <label><span>TITLE <em id="f-title-label">첫 번째 로그 제목</em></span>
+            <input name="title" maxlength="48" placeholder="오늘 궤도에서 본 것" autocomplete="off"></label>
+          <label class="grow"><span>LOG <em>본문</em></span>
+            <textarea name="body" maxlength="3000" placeholder="> 여기에 이야기를 적어 주세요_"></textarea></label>
+          <div class="form-foot">
+            <span class="form-msg" id="form-msg"></span>
+            <button class="btn btn-primary" type="submit" id="form-submit">[ LAUNCH ▸ ]</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ ABOUT ============ -->
+  <div class="modal" id="about" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="about-title">
+    <div class="modal-box about-box frame">
+      <div class="panel-head">
+        <span class="tag" id="about-title">// ABOUT — 운행 규칙</span>
+        <button class="btn" data-close="about">[ ESC ]</button>
+      </div>
+      <div class="about-body">
+        <pre class="about-art" aria-hidden="true">
+        .            *        .
+   .        _.-''''''-._          +
+      .   .'  .--.      '.   .
+         /   (  @ )  .     \       .
+   *    |     '--'    o     |
+         \    .   (=)      /   .
+      .   '._          _.'        *
+             '-......-'     .
+        </pre>
+        <ol class="rules">
+          <li><b>01 / OBSERVE</b> 접속하면 태양계 전체가 보입니다. 떠 있는 모든 행성은 누군가의 블로그입니다. 클릭하면 바로 열람할 수 있습니다.</li>
+          <li><b>02 / GENESIS</b> 이름과 첫 글만 적으면 행성이 탄생합니다. 궤도 반경·이심률·크기·표면·고리는 모두 우주가 랜덤으로 정합니다.</li>
+          <li><b>03 / IMPACT</b> 당신의 행성은 타원 궤도를 돕니다. 다른 행성과 부딪히는 순간, 그 행성의 블로그가 열리고 충돌 기록이 남습니다.</li>
+          <li><b>04 / WARP</b> 우주는 실제 시간으로 흐릅니다. 기다리기 어렵다면 WARP로 시간을 가속하세요.</li>
+        </ol>
+        <div class="keys dim">KEYS · [N] 새 행성 · [I] 인덱스 · [SPACE] 일시정지 · [1–4] 워프 · [ESC] 닫기</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ IMPACT ============ -->
+  <div class="impact" id="impact" aria-live="assertive">
+    <pre class="impact-art" id="impact-art"></pre>
+    <div class="impact-line">COLLISION DETECTED</div>
+    <div class="impact-names" id="impact-names"></div>
+    <div class="impact-sub">궤도 교차 지점에서 블로그 신호를 수신했습니다…</div>
+  </div>
+
+  <div class="tooltip" id="tooltip" role="tooltip"></div>
+  <div class="toast" id="toast" aria-live="polite"></div>
+
+  <!-- ============ STATUS BAR ============ -->
+  <footer class="status">
+    <span id="st-cam">CAM ψ000° θ00° R000</span>
+    <span class="st-mid" id="st-mid">◇ 행성 위에 커서를 올려 보세요</span>
+    <span id="st-fps">FPS 00 · BODIES 00</span>
+  </footer>
+
+  <script src="js/engine.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
