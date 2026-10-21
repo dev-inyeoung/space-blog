@@ -9,12 +9,13 @@ ORBIT.LOG — a no-scroll, single-page "solar system of blogs" where the whole 3
 ## Running
 
 - Any static server works; `file://` also works for normal use.
-- Preview config: `.claude/launch.json` → `orbitlog` runs `.claude/serve.ps1` (a PowerShell `HttpListener` static server) on **port 8642**. Node is not installed and `python` on this machine is the Windows Store stub, so don't rely on them. Port 5173 is taken on this machine.
+- Preview config: `.claude/launch.json` → `orbitlog` runs `.claude/serve.ps1` (a PowerShell `HttpListener` static server) on **port 8642**. Node is not installed and `python` on this machine is the Windows Store stub, so don't rely on them. `gh` and the `claude` CLI aren't installed either; use `curl` against the GitHub API / raw URLs. Port 5173 is taken on this machine.
 - The browser pane throttles or pauses `requestAnimationFrame` when hidden. The on-screen FPS counter and the sim clock stall there, so measure engine cost by constructing a detached `new OrbitEngine.Scene(canvas)` in the console and calling `render()`/`update()` directly. That's also how to test collision frequency headlessly (step `update(1/60)` with `warp = 200`).
 
 ## Deploying
 
 - GitHub `dev-inyeoung/space-blog`, branch `main`. Vercel auto-deploys `main` to `https://space-blog-opal.vercel.app/` (live within ~20 s of a push). There is no Vercel config in the repo; it serves the root as static files.
+- Google Search Console: URL-prefix property for that URL, verified by the `google-site-verification` meta tag in index.html `<head>`. Removing or changing that tag drops verification. `sitemap.xml` is submitted there; bump its `<lastmod>` when content changes meaningfully.
 
 ## Architecture
 
